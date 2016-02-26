@@ -363,7 +363,7 @@ public class POMVisualizer
 			{
 				engine.eval( this.jsExpr ); // compile our filter() function
 			} catch (Exception e) {
-				throw new RuntimeException("Invalid JS expression: \n"+jsExpr);
+				throw new RuntimeException("Invalid JS expression: \n"+jsExpr,e);
 			}
 		}
 
