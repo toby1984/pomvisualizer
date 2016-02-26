@@ -35,15 +35,17 @@ import org.xml.sax.SAXException;
  * and writes a dependency graph as Graphviz/DOT output to standard out.
  * 
  * <pre>
- * Command-line options:<br/>
+ * Usage:
+ * [-v|--verbose] [-maxdepth &lt;depth&gt;] [-filter &lt;JS expression matching on variables 'groupId' and/or 'artifactId' and yielding a boolean value&gt;] &lt;folder&gt; [&lt;folder&gt;] [...] 
+ * <br/>
  * <ul>
- *   <ul>-maxdepth &lt;depth&gt; => (optional) How many subdirectory levels to search for pom.xml files</ul>
- *   <ul>-filter &lt;JS expression&gt; => (optional) Javascript expression used to decide whether an artifact should be included in the output.<br/>(
+ *   <ul>-maxdepth &lt;depth&gt; =&gt; (optional) How many subdirectory levels to search for pom.xml files</ul>
+ *   <ul>-filter &lt;JS expression&gt; =&gt; (optional) Javascript expression used to decide whether an artifact should be included in the output.<br/>(
  *        The expression must yield a boolean value ('true' meaning the artifact should be included in the graph) and has access to 
  *        two variables named 'groupId' and 'artifactId'.
  *   </ul>
- *   <ul>-v|--verbose => (optional) enable debug output</ul>
- *   <ul>folder name => Folder where to start searching for pom.xml files</ul>
+ *   <ul>-v|--verbose =&gt; (optional) enable debug output</ul>
+ *   <ul>folder =&gt; Folder where to start searching for pom.xml files</ul>
  * </ul>
  * </pre>
  * @author tobias.gierke@code-sourcery.de
@@ -150,17 +152,9 @@ public class POMVisualizer
 	public static void main(String[] args) throws Exception 
 	{
 		DependencyFilter filter = artifact -> true;
-		File baseFolder = null;
+		final Set<File> folders = new HashSet<>();
 		boolean verboseMode = false;
 		int maxDepth = Integer.MAX_VALUE;
-		
-//		if ( args.length == 0 ) // TODO: Remove debug code
-//		{
-//			final String jsFilter = "groupId.startsWith('com.voipfuture.cloudportal') && "+ 
-//					"! artifactId.contains('library') && ! artifactId.contains('test') && ! artifactId.contains('webapp') && ! artifactId.contains('parent')";
-//			args = new String[] { "/home/tgierke/mars_workspace/cloudportal/app" , "-filter" , jsFilter };
-//			filter = new JSScriptFilter( jsFilter ); 
-//		}
 		
 		final List<String> argList = Arrays.asList( args );
 		for ( int i = 0 ; i < argList.size() ; i++ ) 
@@ -175,7 +169,7 @@ public class POMVisualizer
 					verboseMode = true;
 					break;
 				case "--help":
-					System.out.println("Usage: [-v|--verbose] [-maxdepth <depth>] [-filter <JS expression matching on variables 'groupId' and/or 'artifactId' and yielding a boolean value>] <folder>");
+					System.out.println("Usage: [-v|--verbose] [-maxdepth <depth>] [-filter <JS expression matching on variables 'groupId' and/or 'artifactId' and yielding a boolean value>] <folder> [<folder>] [...]");
 					return;
 				case "-filter":
 					if ( ! hasNextArg ) {
@@ -192,31 +186,33 @@ public class POMVisualizer
 					i++;
 					break;
 				default:
-					if ( baseFolder != null ) {
-						throw new RuntimeException("Command-line error, unknown parameter '"+arg+"'");
+					final File file = new File( arg );
+					if ( folders.contains( file ) ) {
+						throw new RuntimeException("Duplicate folder name: "+arg);
 					}
-					baseFolder = new File( arg );
+					if ( ! file.exists() || ! file.isDirectory() ) {
+						throw new RuntimeException("File "+file+" does exist or is no directory");
+					}					
+					folders.add( file );
 			}
 		}
 		
-		if ( baseFolder == null || ! baseFolder.exists() || ! baseFolder.isDirectory() ) {
-			throw new RuntimeException("You need to specify a valid base-folder, "+baseFolder+" does exist or is no directory");
-		}
-
 		final POMVisualizer tool = new POMVisualizer();
 		tool.verboseMode = verboseMode;
-		tool.generateDot( baseFolder , filter, maxDepth , System.out);
+		tool.generateDot( folders , filter, maxDepth , System.out);
 	}
 
-	public void generateDot(File baseDir,DependencyFilter filter,int maxDepth,PrintStream dotOut) throws Exception 
+	public void generateDot(Collection<File> folders,DependencyFilter filter,int maxDepth,PrintStream dotOut) throws Exception 
 	{
-		visit( baseDir , 0 , maxDepth , file -> 
-		{ 
-			if ( file.isFile() && file.getName().equals("pom.xml" ) )  
-			{
-				processPomXml( file , filter );
-			}
-		});
+		for ( File folder : folders ) {
+			visit( folder , 0 , maxDepth , file -> 
+			{ 
+				if ( file.isFile() && file.getName().equals("pom.xml" ) )  
+				{
+					processPomXml( file , filter );
+				}
+			});
+		}
 		writeDotGraph(dotOut);
 	}
 
@@ -307,12 +303,12 @@ public class POMVisualizer
 		}
 	}    
 
-	private void visit(File baseDir, int currentDepth,int maxDepth , ThrowingConsumer<File> visitor) throws Exception 
+	private void visit(File folder, int currentDepth,int maxDepth , ThrowingConsumer<File> visitor) throws Exception 
 	{
 		if ( currentDepth > maxDepth) {
 			return;
 		}
-		final File[] files = baseDir.listFiles();
+		final File[] files = folder.listFiles();
 		if ( files != null ) 
 		{
 			for ( File f : files ) 
