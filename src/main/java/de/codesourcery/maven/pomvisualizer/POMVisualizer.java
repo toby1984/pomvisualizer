@@ -30,16 +30,13 @@ import org.xml.sax.EntityResolver;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
-import de.codesourcery.maven.pomvisualizer.POMVisualizer.Artifact;
-import de.codesourcery.maven.pomvisualizer.POMVisualizer.IterationContext;
-
 /**
  * Tiny program that searches a directory subtree for pom.xml files 
  * and writes a dependency graph as Graphviz/DOT output to standard out.
  * 
  * <pre>
  * Usage:
- * [-v|--verbose] [-maxdepth &lt;depth&gt;] [-filter &lt;JS expression matching on variables 'groupId' and/or 'artifactId' and yielding a boolean value&gt;] &lt;folder&gt; [&lt;folder&gt;] [...] 
+ * [-v|--verbose] [-maxdepth &lt;depth&gt;] [-filter &lt;JS expression matching on artifact that produces a boolean value&gt;] &lt;folder&gt; [&lt;folder&gt;] [...] 
  * <br/>
  * <ul>
  *   <ul>-maxdepth &lt;depth&gt; =&gt; (optional) How many subdirectory levels to search for pom.xml files</ul>
@@ -50,6 +47,14 @@ import de.codesourcery.maven.pomvisualizer.POMVisualizer.IterationContext;
  *   <ul>-v|--verbose =&gt; (optional) enable debug output</ul>
  *   <ul>folder =&gt; Folder where to start searching for pom.xml files</ul>
  * </ul>
+ * <p>
+ * Javascript expression:
+ * 
+ * The expression has the {@link Artifact} class bound to the global scope as variable 'artifact'. You can access the group ID via <code>artifact.coords.groupId</code> , the artifact ID via <code>artifact.coords.artifactId</code>
+ * and check whether the artifact depends on a given groupId/artifactId combination by using the expression <code>artifact.dependsOn( "&lt; group id &gt;" , "&lt;artifact id &gt;")</code>. 
+ * 
+ * </p>
+ * 
  * </pre>
  * @author tobias.gierke@code-sourcery.de
  */
@@ -72,10 +77,9 @@ public class POMVisualizer
         public void accept(T obj) throws Exception;
     }
 
+    @FunctionalInterface
     protected interface DependencyFilter 
     {
-        public boolean matches(Coordinates dependency);
-
         public boolean matches(Artifact artifact);
     }
 
@@ -142,18 +146,22 @@ public class POMVisualizer
         }
     }
 
-    protected static final class Artifact 
+    public static final class Artifact 
     {
-        public final Coordinates coordinates;
+        public final Coordinates coords;
         public final Map<Coordinates,Artifact> dependencies=new HashMap<>();
 
         public Artifact(Coordinates key) {
-            this.coordinates = key;
+            this.coords = key;
         }
 
         @Override
         public int hashCode() {
-            return coordinates.hashCode();
+            return coords.hashCode();
+        }
+        
+        public static Artifact newInstance(String groupId,String artifactId) {
+            return new Artifact( new Coordinates(groupId,artifactId ) );
         }
 
         /**
@@ -167,7 +175,7 @@ public class POMVisualizer
             System.out.println("dependsOn( "+groupId+" , "+artifactId+ " )");
             return visitAll( (ctx,artifact) -> 
             {
-                if ( artifact.coordinates.matches(groupId,artifactId) ) {
+                if ( artifact.coords.matches(groupId,artifactId) ) {
                     ctx.stop( true );
                 }
             }, false );
@@ -176,23 +184,7 @@ public class POMVisualizer
         @Override
         public String toString()
         {
-            return coordinates.toString();
-        }
-
-        /**
-         * Returns whether this artifact directly or indirectly depends on the given coordinate.
-         * 
-         * @param coords
-         * @return
-         */
-        public boolean dependsOn(Coordinates coords) 
-        {
-            return visitAll( (ctx,artifact) -> 
-            {
-                if ( artifact.coordinates.equals( coords ) ) {
-                    ctx.stop( true );
-                }
-            }, false );
+            return coords.toString();
         }
 
         public <T> T visitAll(Visitor<T> visitor,T defaultValue) 
@@ -221,7 +213,7 @@ public class POMVisualizer
         public boolean equals(Object obj) 
         {
             if ( obj instanceof Artifact ) {
-                return this.coordinates.equals( ((Artifact) obj).coordinates );
+                return this.coords.equals( ((Artifact) obj).coords );
             }
             return false;
         }
@@ -245,7 +237,7 @@ public class POMVisualizer
         final Set<File> folders = new HashSet<>();
         boolean verboseMode = false;
         int maxDepth = Integer.MAX_VALUE;
-        String dependencyFilterExpr = "true";
+        
         String artifactFilterExpr = "true";
 
         final List<String> argList = Arrays.asList( args );
@@ -263,16 +255,9 @@ public class POMVisualizer
                 case "--help":
                     System.out.println("Usage: [-v|--verbose] [-maxdepth <depth>] [-artifactfilter <JS expression matching on variable 'artifact' and yielding a boolean value>] [-coordinatesfilter <JS expression matching on variables 'groupId' and/or 'artifactId' and yielding a boolean value>] <folder> [<folder>] [...]");
                     return;
-                case "-coordinatesfilter":
+                case "-filter":
                     if ( ! hasNextArg ) {
-                        throw new RuntimeException("-coordinatesfilter requires a parameter");
-                    }
-                    dependencyFilterExpr = nextArg;
-                    i++;
-                    break;	
-                case "-artifactfilter":
-                    if ( ! hasNextArg ) {
-                        throw new RuntimeException("-artifactfilter requires a parameter");
+                        throw new RuntimeException("-filter requires a parameter");
                     }
                     artifactFilterExpr = nextArg;
                     i++;
@@ -296,7 +281,7 @@ public class POMVisualizer
             }
         }
 
-        final DependencyFilter filter = new JSScriptFilter( dependencyFilterExpr , artifactFilterExpr );
+        final DependencyFilter filter = new JSScriptFilter( artifactFilterExpr );
         final POMVisualizer tool = new POMVisualizer();
         tool.verboseMode = verboseMode;
         tool.generateDot( folders , filter, maxDepth , System.out);
@@ -346,7 +331,7 @@ public class POMVisualizer
         {
             for ( Artifact dep : artifact.dependencies.values() ) 
             {
-                out.println( artifact.coordinates.label +" -> "+dep.coordinates.label );
+                out.println( artifact.coords.label +" -> "+dep.coords.label );
             }
         }
         out.println("}");
@@ -379,9 +364,7 @@ public class POMVisualizer
         final String artifactId = evaluateXPath( projectArtifactIdExpression , doc ).findFirst().orElseThrow( RuntimeException::new ).getTextContent();
 
         final Coordinates key = new Coordinates(groupId,artifactId);
-        if ( ! filter.matches( key ) ) {
-            return;
-        }
+
         debug("====== Got project "+key+" ======");
 
         final Artifact project = artifacts.computeIfAbsent( key , k -> new Artifact( k ) );
@@ -392,12 +375,13 @@ public class POMVisualizer
             final String grpId = evaluateXPath( groupIdExpression , dep ).findFirst().orElseThrow( RuntimeException::new ).getTextContent();
 
             final Coordinates depKey = new Coordinates(grpId,artId);
-            if ( filter.matches( depKey ) ) 
-            {
-                debug("Found dependency "+depKey);
-                final Artifact dependency = artifacts.computeIfAbsent( depKey , k -> new Artifact( k ) );
-                project.dependencies.put( depKey , dependency );
+            debug("Found dependency "+depKey);
+            Artifact dependency = artifacts.get( depKey );
+            if ( dependency == null ) {
+                dependency = new Artifact( depKey );
+                artifacts.put( depKey , dependency );
             }
+            project.dependencies.put( depKey , dependency );
         });
     }
 
@@ -469,64 +453,43 @@ public class POMVisualizer
     protected static final class JSScriptFilter implements DependencyFilter {
 
         private final ScriptEngine jsEngine;
-        public final String jsDependencyExpr;
         public final String jsArtifactExpr;
 
-        private JSScriptFilter(String jsDependencyExpr,String jsArtifactExpr) 
+        private JSScriptFilter(String jsArtifactExpr) 
         {
             final ScriptEngineManager scriptManager = new ScriptEngineManager();
             this.jsEngine = scriptManager.getEngineByName("nashorn");
 
-            this.jsArtifactExpr = "var artifactFilter = function(groupId,artifactId) {\n    return "+jsArtifactExpr+";\n}";
-            this.jsDependencyExpr = "var dependencyFilter = function(groupId,artifactId) {\n    return "+jsDependencyExpr+";\n}";
+            this.jsArtifactExpr = jsArtifactExpr;
 
-            // artifact expression
             try 
             {
+                setupBindings( Artifact.newInstance("test","test") );
                 jsEngine.eval( this.jsArtifactExpr );
             } 
             catch (Exception e) {
-                throw new RuntimeException("Invalid JS dependency expression: \n"+jsDependencyExpr,e);
+                throw new RuntimeException("Invalid JS dependency expression: \n"+jsArtifactExpr,e);
             }		    
-
-            // dependency expression
-            try 
-            {
-                jsEngine.eval( this.jsDependencyExpr );
-            } 
-            catch (Exception e) {
-                throw new RuntimeException("Invalid JS dependency expression: \n"+jsDependencyExpr,e);
-            }
         }
-
+        
+        private void setupBindings(Artifact artifact) {
+            jsEngine.getBindings(ScriptContext.ENGINE_SCOPE).put("artifact" , artifact );       
+        }
+        
         @Override
         public boolean matches(Artifact artifact)
         {
-            final Visitor<Boolean> visitor = (context, artifact1) ->
-            {
-                final Boolean result = invokeFilterFunc( "artifactFilter" , artifact1.coordinates.groupId, artifact1.coordinates.artifactId );
-                if ( result.booleanValue() ) 
-                {
-                    context.stop( true );
-                }
-            }; 
-            return artifact.visitAll( visitor , false );
+            setupBindings(artifact);
+            return invokeFilterFunc( jsArtifactExpr );
         }
 
-        @Override
-        public boolean matches(Coordinates dependency) 
+        private Boolean invokeFilterFunc(String expr) 
         {
-            return invokeFilterFunc("dependencyFilter", dependency.groupId, dependency.artifactId );
-        }        
-        
-        private Boolean invokeFilterFunc(String functionName,Object... arguments) 
-        {
-            final String expr = "artifactFilter".equals( functionName ) ? jsArtifactExpr : jsDependencyExpr;
             final Object result; 
             try {
-                result = ((Invocable) this.jsEngine).invokeFunction( functionName , arguments );
+                result = jsEngine.eval( expr );
             } 
-            catch (NoSuchMethodException | ScriptException e) 
+            catch (ScriptException e) 
             {
                 throw new RuntimeException("Invalid JS artifact expression: \n"+expr,e);
             }
