@@ -150,6 +150,7 @@ public class POMVisualizer
     {
         public final Coordinates coords;
         public final Map<Coordinates,Artifact> dependencies=new HashMap<>();
+        public final Map<Coordinates,Artifact> requiredBy=new HashMap<>();
 
         public Artifact(Coordinates key) {
             this.coords = key;
@@ -163,6 +164,23 @@ public class POMVisualizer
         public static Artifact newInstance(String groupId,String artifactId) {
             return new Artifact( new Coordinates(groupId,artifactId ) );
         }
+        
+        public boolean requiredBy(String groupId,String artifactId) {
+            return visitAllRequiredBy( (ctx,artifact) -> 
+            {
+                if ( artifact.coords.matches(groupId,artifactId) ) {
+                    ctx.stop( true );
+                }
+            }, false );
+        }
+        
+        public String groupId() {
+            return coords.groupId;
+        }
+        
+        public String artifactId() {
+            return coords.artifactId;
+        }
 
         /**
          * Returns whether this artifact directly or indirectly depends on the given coordinate.
@@ -172,8 +190,7 @@ public class POMVisualizer
          */		
         public boolean dependsOn(String groupId,String artifactId) 
         {
-            System.out.println("dependsOn( "+groupId+" , "+artifactId+ " )");
-            return visitAll( (ctx,artifact) -> 
+            return visitAllDependencies( (ctx,artifact) -> 
             {
                 if ( artifact.coords.matches(groupId,artifactId) ) {
                     ctx.stop( true );
@@ -186,8 +203,30 @@ public class POMVisualizer
         {
             return coords.toString();
         }
+        
+        public <T> T visitAllRequiredBy(Visitor<T> visitor,T defaultValue) 
+        {
+            final Set<Artifact> visited = new HashSet<>();
+            final IterationContext<T> ctx = new IterationContext<T>(defaultValue);
+            final Stack<Artifact> toVisit=new Stack<>();
+            toVisit.push( this );
+            while ( ! toVisit.isEmpty() ) 
+            {
+                final Artifact current = toVisit.pop();
+                if ( ! visited.contains( current ) ) 
+                {
+                    visited.add( current );                    
+                    visitor.visit( ctx, current );
+                    if ( ctx.stop ) {
+                        break;
+                    }                    
+                    toVisit.addAll( current.requiredBy.values() );
+                }
+            }
+            return ctx.result;
+        }        
 
-        public <T> T visitAll(Visitor<T> visitor,T defaultValue) 
+        public <T> T visitAllDependencies(Visitor<T> visitor,T defaultValue) 
         {
             final Set<Artifact> visited = new HashSet<>();
             final IterationContext<T> ctx = new IterationContext<T>(defaultValue);
@@ -253,7 +292,7 @@ public class POMVisualizer
                     verboseMode = true;
                     break;
                 case "--help":
-                    System.out.println("Usage: [-v|--verbose] [-maxdepth <depth>] [-artifactfilter <JS expression matching on variable 'artifact' and yielding a boolean value>] [-coordinatesfilter <JS expression matching on variables 'groupId' and/or 'artifactId' and yielding a boolean value>] <folder> [<folder>] [...]");
+                    System.out.println("Usage: [-v|--verbose] [-maxdepth <depth>] [-filter <JS expression matching on variable 'artifact' and yielding a boolean value>] [-coordinatesfilter <JS expression matching on variables 'groupId' and/or 'artifactId' and yielding a boolean value>] <folder> [<folder>] [...]");
                     return;
                 case "-filter":
                     if ( ! hasNextArg ) {
@@ -382,6 +421,7 @@ public class POMVisualizer
                 artifacts.put( depKey , dependency );
             }
             project.dependencies.put( depKey , dependency );
+            dependency.requiredBy.put( key , project );
         });
     }
 

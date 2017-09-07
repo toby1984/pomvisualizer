@@ -29,22 +29,28 @@ You may want to redirect the output to a file for later processing by dot/neato 
 
 __Javascript expressions__
 
-The expression has the de.code-sourcery.maven.pomvisualizer.POMVisualizer.Artifact class bound to the global scope as variable 'artifact'. You can access the group ID via
+The filter expression has the de.code-sourcery.maven.pomvisualizer.POMVisualizer.Artifact class bound to the global scope as variable 'artifact'. You can access the group ID via
 
 ```
-artifact.coords.groupId
+artifact.groupId()
 ```
 
 , the artifact ID via 
 
 ```
-artifact.coords.artifactId
+artifact.artifactId()
 ```
 
-and check whether the artifact directly or indirectly depends on a given groupId/artifactId combination by using the expression 
+,check whether the artifact directly or indirectly depends on a given groupId/artifactId combination by using the expression 
 
 ```
 artifact.dependsOn( "<group id>" , "<artifact id>")
+```
+
+and check whether the artifact is directly or indirectly required by something by doing
+
+```
+artifact.requiredBy("<group id>","<artifact id>")
 ```
 
 See the Artifact class for more fields/methods that might be accessible.
