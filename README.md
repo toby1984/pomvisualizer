@@ -1,6 +1,6 @@
 __POM visualizer__
 
-A tiny self-executable Java program that searches a directory subtree for Maven pom.xml files and writes a dependency graph as Graphviz/DOT output to standard out.
+A tiny self-executable Java program that searches a directory subtree for Maven pom.xml files and writes a dependency graph as Graphviz/DOT output to standard out. The program will look for cycles in the graph and color the edges of the shortest cycles in red.
 
 __Requirements__
 

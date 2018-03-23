@@ -17,6 +17,7 @@ package de.codesourcery.maven.pomvisualizer;
 
 import java.io.*;
 import java.util.*;
+import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
 import javax.script.*;
@@ -63,6 +64,8 @@ public class POMVisualizer
     private boolean verboseMode = false;
 
     private final Map<Coordinates,Artifact> artifacts = new HashMap<>();
+    
+    private List<LinkedHashSet<Artifact>> circles;    
 
     private final XPathExpression dependencyExpression;
     private final XPathExpression parentGroupIdExpression;
@@ -366,14 +369,112 @@ public class POMVisualizer
             out.println( key.label+" [label=\""+key.toString()+"\"]");
             id++;
         }
+        final boolean hasCircles = hasCircles();
         for ( Artifact artifact : artifacts.values() ) 
         {
             for ( Artifact dep : artifact.dependencies.values() ) 
             {
-                out.println( artifact.coords.label +" -> "+dep.coords.label );
+                if ( hasCircles && isPartOfShortestCircle(artifact,dep) ) {
+                    out.println( artifact.coords.label +" -> "+dep.coords.label + "[color=red,penwidth=2]" );
+                } else {
+                    out.println( artifact.coords.label +" -> "+dep.coords.label );
+                }
             }
         }
         out.println("}");
+    }
+    
+    // returns whether the graph contains at least one circle
+    private boolean hasCircles() 
+    {
+        return ! getCircles().isEmpty();
+    }
+    
+    private List<LinkedHashSet<Artifact>> getCircles() {
+        if ( circles == null ) 
+        {
+            circles = new ArrayList<>();
+            for ( Artifact a : artifacts.values() ) 
+            {
+                debug("--- checking circles for "+a);
+                final LinkedHashSet<Artifact> circle = getShortestCircle(a);
+                if ( ! circle.isEmpty() ) 
+                {
+                    debug("FOUND circle: "+circle.stream().map( x -> x.toString() ).collect( Collectors.joining(" -> " ) ) );
+                    circles.add( circle );
+                }
+            }
+        }
+        return circles;
+    }
+    
+    // returns whether the graph contains at least one circle
+    private LinkedHashSet<Artifact> getShortestCircle(Artifact a) 
+    {
+        LinkedHashSet<Artifact> shortest = null;
+        for ( Artifact dep : a.dependencies.values() ) 
+        {
+            final LinkedHashSet<Artifact> tmp = new LinkedHashSet<Artifact>();
+            if ( getCircles( dep, a, tmp ) ) 
+            {
+                debug("Found circle with size "+tmp.size());
+                if ( shortest == null || shortest.size() > tmp.size() ) {
+                    shortest = tmp;
+                }
+            }
+        }
+        return shortest == null ? new LinkedHashSet<>() : shortest;
+    }
+    
+    private boolean getCircles(Artifact toCheck,Artifact parent,LinkedHashSet<Artifact> alreadyVisited) 
+    {
+        if ( alreadyVisited.contains( toCheck ) ) {
+            if ( verboseMode ) {
+                debug( parent+" depends on "+toCheck);
+            }
+            return true;
+        }
+        alreadyVisited.add( toCheck );
+        
+        LinkedHashSet<Artifact> copy = new LinkedHashSet<Artifact>(alreadyVisited);
+        
+        for ( Artifact dep : toCheck.dependencies.values() ) 
+        {
+            if ( getCircles( dep, toCheck, copy) ) 
+            {
+                alreadyVisited.clear();
+                alreadyVisited.addAll( copy );
+                return true;
+            } 
+            copy= new LinkedHashSet<Artifact>(alreadyVisited);
+        }
+        return false;
+    }    
+    
+    // returns whether some dependency 'a depends on b' is part of a circle'
+    private boolean isPartOfShortestCircle(Artifact a,Artifact b) 
+    {
+        final List<LinkedHashSet<Artifact>> circles = getCircles();
+        LinkedHashSet<Artifact> shortestWithA = null;
+        LinkedHashSet<Artifact> shortestWithB = null;
+        for ( LinkedHashSet<Artifact> set : circles ) 
+        {
+            if ( set.contains( a ) && ( shortestWithA == null || shortestWithA.size() > set.size() ) ) {
+                shortestWithA = set;
+            } 
+            if ( set.contains( b ) && ( shortestWithB == null || shortestWithB.size() > set.size() ) ) {
+                shortestWithB = set;
+            }             
+        }
+        return shortestWithA != null && equals(shortestWithA,shortestWithB) && shortestWithA.contains( a ) && shortestWithA.contains( b );
+    }
+
+    private static boolean equals(Object a,Object b) {
+        
+        if ( a == null || b == null ) {
+            return a == b;
+        }
+        return a.equals(b);
     }
 
     private void debug(String msg) {
