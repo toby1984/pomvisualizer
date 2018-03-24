@@ -22,7 +22,6 @@ import java.io.FileOutputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.PrintStream;
-import java.io.PrintWriter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -62,6 +61,8 @@ import org.xml.sax.EntityResolver;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
 
+import de.codesourcery.maven.pomvisualizer.Graph.GraphBuilder;
+
 /**
  * Tiny program that searches a directory subtree for pom.xml files 
  * and writes a dependency graph as Graphviz/DOT output to standard out.
@@ -96,7 +97,9 @@ public class POMVisualizer
     
     private final Map<Coordinates,Artifact> artifacts = new HashMap<>();
     
-    private List<LinkedHashSet<Artifact>> cycles;    
+    private Graph graph;
+    
+    private List<Graph> cycles;    
 
     private final XPathExpression dependencyExpression;
     private final XPathExpression parentGroupIdExpression;
@@ -180,13 +183,9 @@ public class POMVisualizer
         }
     }
 
-    public static final class Artifact 
+    public final class Artifact 
     {
         public final Coordinates coords;
-        public final Map<Coordinates,Artifact> dependencies=new HashMap<>();
-        public final Map<Coordinates,Artifact> requiredBy=new HashMap<>();
-        
-        public Artifact parent; // used only during breadth-first search
 
         public Artifact(Coordinates key) {
             this.coords = key;
@@ -197,8 +196,8 @@ public class POMVisualizer
             return coords.hashCode();
         }
         
-        public static Artifact newInstance(String groupId,String artifactId) {
-            return new Artifact( new Coordinates(groupId,artifactId ) );
+        public Artifact(String groupId,String artifactId) {
+            this( new Coordinates(groupId,artifactId ) );
         }
         
         public boolean requiredBy(String groupId,String artifactId) {
@@ -256,7 +255,7 @@ public class POMVisualizer
                     if ( ctx.stop ) {
                         break;
                     }                    
-                    toVisit.addAll( current.requiredBy.values() );
+                    toVisit.addAll( graph.getRequiredBy( current ) );
                 }
             }
             return ctx.result;
@@ -278,7 +277,7 @@ public class POMVisualizer
                     if ( ctx.stop ) {
                         break;
                     }                    
-                    toVisit.addAll( current.dependencies.values() );
+                    toVisit.addAll( graph.getDependencies( current ) );
                 }
             }
             return ctx.result;
@@ -364,23 +363,25 @@ public class POMVisualizer
             }
         }
 
-        final DependencyFilter filter = new JSScriptFilter( artifactFilterExpr );
         final POMVisualizer tool = new POMVisualizer();
+        final DependencyFilter filter = tool.new JSScriptFilter( artifactFilterExpr );
         tool.verboseMode = verboseMode;
         tool.generateDot( folders , filter, maxDepth , dotOut );
     }
 
     public void generateDot(Collection<File> folders,DependencyFilter filter,int maxDepth,PrintStream dotOut) throws Exception 
     {
+        GraphBuilder builder = Graph.newGraph();
         for ( File folder : folders ) {
             visit( folder , 0 , maxDepth , file -> 
             { 
                 if ( file.isFile() && file.getName().equals("pom.xml" ) )  
                 {
-                    processPomXml( file , filter );
+                    processPomXml( file , filter, builder );
                 }
             });
         }
+        graph = builder.build();
 
         // apply artifact-level filter
         debug("Applying artifact-level filter...");
@@ -391,11 +392,7 @@ public class POMVisualizer
                 toRemove.add( a );
             }
         }
-        for ( Artifact a : artifacts.values() ) 
-        {
-            a.dependencies.values().removeAll( toRemove );
-        }
-        artifacts.values().removeAll( toRemove );
+        graph = graph.removeAll( toRemove );
 
         // render graph
         writeDotGraph(dotOut);
@@ -413,7 +410,7 @@ public class POMVisualizer
         final boolean hasCircles = hasCycles();
         for ( Artifact artifact : artifacts.values() ) 
         {
-            for ( Artifact dep : artifact.dependencies.values() ) 
+            for ( Artifact dep : graph.getDependencies( artifact ) ) 
             {
                 if ( hasCircles && isPartOfShortestCircle(artifact,dep) ) {
                     out.println( artifact.coords.label +" -> "+dep.coords.label + "[color=red,penwidth=2]" );
@@ -431,17 +428,17 @@ public class POMVisualizer
         return ! getCycles().isEmpty();
     }
     
-    private List<LinkedHashSet<Artifact>> getCycles() {
+    private List<Graph> getCycles() {
         if ( cycles == null ) 
         {
             cycles = new ArrayList<>();
-            for ( Artifact a : artifacts.values() ) 
+            for ( Artifact a : graph.nodes ) 
             {
                 debug("--- checking cycles for "+a);
-                final LinkedHashSet<Artifact> shortestCycle = getShortestCycle(a);
+                final Graph shortestCycle = graph.getShortestCycle(a);
                 if ( ! shortestCycle.isEmpty() ) 
                 {
-                    debug("FOUND cycle with len "+shortestCycle.size()+" "+shortestCycle.stream().map( x -> x.toString() ).collect( Collectors.joining(" -> " ) ) );
+                    debug("FOUND cycle with len "+shortestCycle.nodeCount()+" "+graph);
                     if ( ! maybeAddCycle( shortestCycle ) ) 
                     {
                     	debug("Ignoring duplicate cycle");
@@ -454,17 +451,20 @@ public class POMVisualizer
         return cycles;
     }
     
-    private boolean maybeAddCycle(LinkedHashSet<Artifact> cycle) 
+    private boolean maybeAddCycle(Graph cycle) 
     {
-    	if ( cycles.contains( cycle ) ) {
-    		return false; 
-    	}
+        for ( Graph g : cycles ) 
+        {
+            if ( g.haveSameNodes( cycle ) ) {
+                return false;
+            }
+        }
     	for ( int i = 0 ; i < cycles.size() ; i++ ) 
     	{
-    		final LinkedHashSet<Artifact> existing = cycles.get(i);
-    		if ( shareEdge(existing,cycle ) ) 
+    		final Graph existing = cycles.get(i);
+    		if ( existing.intersects( cycle ) ) 
     		{
-    			if ( cycle.size() < existing.size() ) {
+    			if ( cycle.nodeCount() < existing.nodeCount() ) {
     				cycles.set(i, cycle);
     				return true;
     			}
@@ -512,60 +512,13 @@ public class POMVisualizer
     	return edges1; // TODO: Implement me    	
     }
     
-    // returns the shortest cycle containing a given node (if any exists)
-    private LinkedHashSet<Artifact> getShortestCycle(Artifact a) 
-    {
-    	artifacts.values().forEach( x -> x.parent = null );
-    	
-    	final LinkedHashSet<Artifact> result = new LinkedHashSet<>();
-
-    	final Set<Artifact> visited = new HashSet<>();
-    	final LinkedList<Artifact> queue = new LinkedList<>();
-    	
-    	queue.add( a );
-    	visited.add(a);
-    	
-    	debug("Looking for cycles involving: "+a);
-    	while ( ! queue.isEmpty() ) 
-    	{
-    		final Artifact parent = queue.remove(0);
-    		debug("==== Parent: "+parent);
-    		for ( Artifact c : parent.dependencies.values() ) 
-    		{
-    			debug("Child: "+c);
-        		if ( c == a ) 
-        		{
-        			debug("Already visited: "+c);
-        			final LinkedList<Artifact> path = new LinkedList<>();
-        			Artifact current = parent;
-        			do 
-        			{
-        				path.add(current);
-        				current = current.parent;
-        			} while ( current != null );
-        			for ( int i = path.size()-1 ; i >= 0 ; i--) {
-        				result.add( path.get(i) );
-        			}
-        			return result;
-        		}    		
-        		if ( ! visited.contains( c ) ) {
-        			c.parent = parent;
-        			visited.add(c);
-        			queue.add( c );
-        		}
-    		}
-    	}
-    	return result;
-    }
-    
-    // returns whether some dependency 'a depends on b' is part of a circle'
     private boolean isPartOfShortestCircle(Artifact a,Artifact b) 
     {
-        final List<LinkedHashSet<Artifact>> cycles = getCycles();
-        LinkedHashSet<Artifact> shortest = null;
-        for ( LinkedHashSet<Artifact> set : cycles ) 
+        final List<Graph> cycles = getCycles();
+        Graph shortest = null;
+        for ( Graph set : cycles ) 
         {
-            if ( set.contains( a ) && set.contains(b) && ( shortest == null || shortest.size() > set.size() ) ) {
+            if ( set.contains( a ) && set.contains(b) && ( shortest == null || shortest.nodeCount() > set.nodeCount() ) ) {
                 shortest = set;
             } 
         }
@@ -586,7 +539,7 @@ public class POMVisualizer
         }
     }
 
-    private void processPomXml(File pomXml,DependencyFilter filter) throws Exception 
+    private void processPomXml(File pomXml,DependencyFilter filter, GraphBuilder graphBuilder) throws Exception 
     {
         debug("Scanning "+pomXml.getAbsolutePath()+" ...");
 
@@ -610,8 +563,13 @@ public class POMVisualizer
 
         debug("====== Got project "+key+" ======");
 
-        final Artifact project = artifacts.computeIfAbsent( key , k -> new Artifact( k ) );
+        final Artifact project = artifacts.computeIfAbsent( key , k -> { 
+            final Artifact result = new Artifact( k );
+            graphBuilder.addNode( result );
+            return result;
+        } );
 
+        // TODO: Also consider inherited dependencies contributed by <dependencies/> section in parent...
         evaluateXPath( dependencyExpression , doc ).forEach( dep -> 
         {
             final String artId = evaluateXPath( artifactIdExpression , dep ).findFirst().orElseThrow( RuntimeException::new ).getTextContent();
@@ -624,8 +582,7 @@ public class POMVisualizer
                 dependency = new Artifact( depKey );
                 artifacts.put( depKey , dependency );
             }
-            project.dependencies.put( depKey , dependency );
-            dependency.requiredBy.put( key , project );
+            graphBuilder.addDependency( project, dependency );
         });
     }
 
@@ -694,7 +651,7 @@ public class POMVisualizer
         return result.stream();
     }
 
-    protected static final class JSScriptFilter implements DependencyFilter {
+    protected final class JSScriptFilter implements DependencyFilter {
 
         private final ScriptEngine jsEngine;
         public final String jsArtifactExpr;
@@ -708,7 +665,7 @@ public class POMVisualizer
 
             try 
             {
-                setupBindings( Artifact.newInstance("test","test") );
+                setupBindings( new Artifact("test","test") );
                 jsEngine.eval( this.jsArtifactExpr );
             } 
             catch (Exception e) {
