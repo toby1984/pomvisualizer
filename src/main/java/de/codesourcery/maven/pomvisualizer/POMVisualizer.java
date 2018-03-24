@@ -15,18 +15,47 @@
  */
 package de.codesourcery.maven.pomvisualizer;
 
-import java.io.*;
-import java.util.*;
+import java.io.ByteArrayInputStream;
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.PrintStream;
+import java.io.PrintWriter;
+import java.util.ArrayList;
+import java.util.Arrays;
+import java.util.Collection;
+import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
+import java.util.LinkedList;
+import java.util.List;
+import java.util.Map;
+import java.util.Objects;
+import java.util.Optional;
+import java.util.Set;
+import java.util.Stack;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
 
-import javax.script.*;
+import javax.script.ScriptContext;
+import javax.script.ScriptEngine;
+import javax.script.ScriptEngineManager;
+import javax.script.ScriptException;
 import javax.xml.parsers.DocumentBuilder;
 import javax.xml.parsers.DocumentBuilderFactory;
 import javax.xml.parsers.ParserConfigurationException;
-import javax.xml.xpath.*;
+import javax.xml.xpath.XPath;
+import javax.xml.xpath.XPathConstants;
+import javax.xml.xpath.XPathExpression;
+import javax.xml.xpath.XPathExpressionException;
+import javax.xml.xpath.XPathFactory;
 
-import org.w3c.dom.*;
+import org.w3c.dom.Document;
+import org.w3c.dom.Element;
+import org.w3c.dom.Node;
+import org.w3c.dom.NodeList;
 import org.xml.sax.EntityResolver;
 import org.xml.sax.InputSource;
 import org.xml.sax.SAXException;
@@ -62,10 +91,10 @@ import org.xml.sax.SAXException;
 public class POMVisualizer
 {
     private boolean verboseMode = false;
-
+    
     private final Map<Coordinates,Artifact> artifacts = new HashMap<>();
     
-    private List<LinkedHashSet<Artifact>> circles;    
+    private List<LinkedHashSet<Artifact>> cycle;    
 
     private final XPathExpression dependencyExpression;
     private final XPathExpression parentGroupIdExpression;
@@ -154,6 +183,8 @@ public class POMVisualizer
         public final Coordinates coords;
         public final Map<Coordinates,Artifact> dependencies=new HashMap<>();
         public final Map<Coordinates,Artifact> requiredBy=new HashMap<>();
+        
+        public Artifact parent; // used only during breadth-first search
 
         public Artifact(Coordinates key) {
             this.coords = key;
@@ -274,13 +305,18 @@ public class POMVisualizer
         artifactIdExpression = xpath.compile("artifactId");            
     }	
 
-    public static void main(String[] args) throws Exception 
+    public static void main(String[] args) throws Exception {
+    	main2(Arrays.asList("-maxdepth","3","-v","/home/tobi/photon_workspace/pomvisualizer/example" ).toArray(new String[0]) );
+    }
+    
+    public static void main2(String[] args) throws Exception 
     {
         final Set<File> folders = new HashSet<>();
         boolean verboseMode = false;
         int maxDepth = Integer.MAX_VALUE;
         
         String artifactFilterExpr = "true";
+        PrintStream dotOut = new PrintStream(System.out);
 
         final List<String> argList = Arrays.asList( args );
         for ( int i = 0 ; i < argList.size() ; i++ ) 
@@ -295,8 +331,15 @@ public class POMVisualizer
                     verboseMode = true;
                     break;
                 case "--help":
-                    System.out.println("Usage: [-v|--verbose] [-maxdepth <depth>] [-filter <JS expression matching on variable 'artifact' and yielding a boolean value>] [-coordinatesfilter <JS expression matching on variables 'groupId' and/or 'artifactId' and yielding a boolean value>] <folder> [<folder>] [...]");
+                    System.out.println("Usage: [-v|--verbose] [-maxdepth <depth>] [-o <dotOutputFile>] [-filter <JS expression matching on variable 'artifact' and yielding a boolean value>] [-coordinatesfilter <JS expression matching on variables 'groupId' and/or 'artifactId' and yielding a boolean value>] <folder> [<folder>] [...]");
                     return;
+                case "-o":
+                    if ( ! hasNextArg ) {
+                        throw new RuntimeException("-o requires a parameter");
+                    }
+                    dotOut = new PrintStream( new FileOutputStream( new File( nextArg ) ) );
+                    i++;                	
+                	break;
                 case "-filter":
                     if ( ! hasNextArg ) {
                         throw new RuntimeException("-filter requires a parameter");
@@ -326,7 +369,7 @@ public class POMVisualizer
         final DependencyFilter filter = new JSScriptFilter( artifactFilterExpr );
         final POMVisualizer tool = new POMVisualizer();
         tool.verboseMode = verboseMode;
-        tool.generateDot( folders , filter, maxDepth , System.out);
+        tool.generateDot( folders , filter, maxDepth , dotOut );
     }
 
     public void generateDot(Collection<File> folders,DependencyFilter filter,int maxDepth,PrintStream dotOut) throws Exception 
@@ -387,86 +430,93 @@ public class POMVisualizer
     // returns whether the graph contains at least one circle
     private boolean hasCircles() 
     {
-        return ! getCircles().isEmpty();
+        return ! getCycles().isEmpty();
     }
     
-    private List<LinkedHashSet<Artifact>> getCircles() {
-        if ( circles == null ) 
+    private List<LinkedHashSet<Artifact>> getCycles() {
+        if ( cycle == null ) 
         {
-            circles = new ArrayList<>();
+            cycle = new ArrayList<>();
             for ( Artifact a : artifacts.values() ) 
             {
-                debug("--- checking circles for "+a);
-                final LinkedHashSet<Artifact> circle = getShortestCircle(a);
-                if ( ! circle.isEmpty() ) 
+                debug("--- checking cycles for "+a);
+                final LinkedHashSet<Artifact> shortestCycle = getShortestCycle(a);
+                if ( ! shortestCycle.isEmpty() ) 
                 {
-                    debug("FOUND circle: "+circle.stream().map( x -> x.toString() ).collect( Collectors.joining(" -> " ) ) );
-                    circles.add( circle );
+                    debug("FOUND cycle with len "+shortestCycle.size()+" "+shortestCycle.stream().map( x -> x.toString() ).collect( Collectors.joining(" -> " ) ) );
+                    if ( ! cycle.contains( shortestCycle ) ) {
+                    	cycle.add( shortestCycle );
+                    } else {
+                    	debug("Ignoring duplicate cycle");
+                    }
                 }
             }
         }
-        return circles;
+        return cycle;
+    }
+    
+    private boolean shareEdge(LinkedHashSet<Artifact> graph1,LinkedHashSet<Artifact> graph2) {
+    	return false; // TODO: Implement me
     }
     
     // returns whether the graph contains at least one circle
-    private LinkedHashSet<Artifact> getShortestCircle(Artifact a) 
+    private LinkedHashSet<Artifact> getShortestCycle(Artifact a) 
     {
-        LinkedHashSet<Artifact> shortest = null;
-        for ( Artifact dep : a.dependencies.values() ) 
-        {
-            final LinkedHashSet<Artifact> tmp = new LinkedHashSet<Artifact>();
-            if ( getCircles( dep, a, tmp ) ) 
-            {
-                debug("Found circle with size "+tmp.size());
-                if ( shortest == null || shortest.size() > tmp.size() ) {
-                    shortest = tmp;
-                }
-            }
-        }
-        return shortest == null ? new LinkedHashSet<>() : shortest;
+    	artifacts.values().forEach( x -> x.parent = null );
+    	
+    	final LinkedHashSet<Artifact> result = new LinkedHashSet<>();
+
+    	final Set<Artifact> visited = new HashSet<>();
+    	final LinkedList<Artifact> queue = new LinkedList<>();
+    	
+    	queue.add( a );
+    	visited.add(a);
+    	
+    	debug("Looking for cycles involving: "+a);
+    	while ( ! queue.isEmpty() ) 
+    	{
+    		final Artifact parent = queue.remove(0);
+    		debug("==== Parent: "+parent);
+    		for ( Artifact c : parent.dependencies.values() ) 
+    		{
+    			debug("Child: "+c);
+        		if ( c == a ) 
+        		{
+        			debug("Already visited: "+c);
+        			final LinkedList<Artifact> path = new LinkedList<>();
+        			Artifact current = parent;
+        			do 
+        			{
+        				path.add(current);
+        				current = current.parent;
+        			} while ( current != null );
+        			for ( int i = path.size()-1 ; i >= 0 ; i--) {
+        				result.add( path.get(i) );
+        			}
+        			return result;
+        		}    		
+        		if ( ! visited.contains( c ) ) {
+        			c.parent = parent;
+        			visited.add(c);
+        			queue.add( c );
+        		}
+    		}
+    	}
+    	return result;
     }
-    
-    private boolean getCircles(Artifact toCheck,Artifact parent,LinkedHashSet<Artifact> alreadyVisited) 
-    {
-        if ( alreadyVisited.contains( toCheck ) ) {
-            if ( verboseMode ) {
-                debug( parent+" depends on "+toCheck);
-            }
-            return true;
-        }
-        alreadyVisited.add( toCheck );
-        
-        LinkedHashSet<Artifact> copy = new LinkedHashSet<Artifact>(alreadyVisited);
-        
-        for ( Artifact dep : toCheck.dependencies.values() ) 
-        {
-            if ( getCircles( dep, toCheck, copy) ) 
-            {
-                alreadyVisited.clear();
-                alreadyVisited.addAll( copy );
-                return true;
-            } 
-            copy= new LinkedHashSet<Artifact>(alreadyVisited);
-        }
-        return false;
-    }    
     
     // returns whether some dependency 'a depends on b' is part of a circle'
     private boolean isPartOfShortestCircle(Artifact a,Artifact b) 
     {
-        final List<LinkedHashSet<Artifact>> circles = getCircles();
-        LinkedHashSet<Artifact> shortestWithA = null;
-        LinkedHashSet<Artifact> shortestWithB = null;
-        for ( LinkedHashSet<Artifact> set : circles ) 
+        final List<LinkedHashSet<Artifact>> cycles = getCycles();
+        LinkedHashSet<Artifact> shortest = null;
+        for ( LinkedHashSet<Artifact> set : cycles ) 
         {
-            if ( set.contains( a ) && ( shortestWithA == null || shortestWithA.size() > set.size() ) ) {
-                shortestWithA = set;
+            if ( set.contains( a ) && set.contains(b) && ( shortest == null || shortest.size() > set.size() ) ) {
+                shortest = set;
             } 
-            if ( set.contains( b ) && ( shortestWithB == null || shortestWithB.size() > set.size() ) ) {
-                shortestWithB = set;
-            }             
         }
-        return shortestWithA != null && equals(shortestWithA,shortestWithB) && shortestWithA.contains( a ) && shortestWithA.contains( b );
+        return shortest != null;
     }
 
     private static boolean equals(Object a,Object b) {
