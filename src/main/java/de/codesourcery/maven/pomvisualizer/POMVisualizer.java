@@ -28,10 +28,12 @@ import java.util.Arrays;
 import java.util.Collection;
 import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Iterator;
 import java.util.LinkedHashSet;
 import java.util.LinkedList;
 import java.util.List;
 import java.util.Map;
+import java.util.Map.Entry;
 import java.util.Objects;
 import java.util.Optional;
 import java.util.Set;
@@ -94,7 +96,7 @@ public class POMVisualizer
     
     private final Map<Coordinates,Artifact> artifacts = new HashMap<>();
     
-    private List<LinkedHashSet<Artifact>> cycle;    
+    private List<LinkedHashSet<Artifact>> cycles;    
 
     private final XPathExpression dependencyExpression;
     private final XPathExpression parentGroupIdExpression;
@@ -305,11 +307,7 @@ public class POMVisualizer
         artifactIdExpression = xpath.compile("artifactId");            
     }	
 
-    public static void main(String[] args) throws Exception {
-    	main2(Arrays.asList("-maxdepth","3","-v","/home/tobi/photon_workspace/pomvisualizer/example" ).toArray(new String[0]) );
-    }
-    
-    public static void main2(String[] args) throws Exception 
+    public static void main(String[] args) throws Exception 
     {
         final Set<File> folders = new HashSet<>();
         boolean verboseMode = false;
@@ -412,7 +410,7 @@ public class POMVisualizer
             out.println( key.label+" [label=\""+key.toString()+"\"]");
             id++;
         }
-        final boolean hasCircles = hasCircles();
+        final boolean hasCircles = hasCycles();
         for ( Artifact artifact : artifacts.values() ) 
         {
             for ( Artifact dep : artifact.dependencies.values() ) 
@@ -428,15 +426,15 @@ public class POMVisualizer
     }
     
     // returns whether the graph contains at least one circle
-    private boolean hasCircles() 
+    private boolean hasCycles() 
     {
         return ! getCycles().isEmpty();
     }
     
     private List<LinkedHashSet<Artifact>> getCycles() {
-        if ( cycle == null ) 
+        if ( cycles == null ) 
         {
-            cycle = new ArrayList<>();
+            cycles = new ArrayList<>();
             for ( Artifact a : artifacts.values() ) 
             {
                 debug("--- checking cycles for "+a);
@@ -444,22 +442,77 @@ public class POMVisualizer
                 if ( ! shortestCycle.isEmpty() ) 
                 {
                     debug("FOUND cycle with len "+shortestCycle.size()+" "+shortestCycle.stream().map( x -> x.toString() ).collect( Collectors.joining(" -> " ) ) );
-                    if ( ! cycle.contains( shortestCycle ) ) {
-                    	cycle.add( shortestCycle );
-                    } else {
+                    if ( ! maybeAddCycle( shortestCycle ) ) 
+                    {
                     	debug("Ignoring duplicate cycle");
+                    } else {
+                    	debug("Keeping cycle "+shortestCycle);
                     }
                 }
             }
         }
-        return cycle;
+        return cycles;
     }
     
-    private boolean shareEdge(LinkedHashSet<Artifact> graph1,LinkedHashSet<Artifact> graph2) {
-    	return false; // TODO: Implement me
+    private boolean maybeAddCycle(LinkedHashSet<Artifact> cycle) 
+    {
+    	if ( cycles.contains( cycle ) ) {
+    		return false; 
+    	}
+    	for ( int i = 0 ; i < cycles.size() ; i++ ) 
+    	{
+    		final LinkedHashSet<Artifact> existing = cycles.get(i);
+    		if ( shareEdge(existing,cycle ) ) 
+    		{
+    			if ( cycle.size() < existing.size() ) {
+    				cycles.set(i, cycle);
+    				return true;
+    			}
+    			return false;
+    		}
+    	}
+    	cycles.add(cycle);
+    	return true;
     }
     
-    // returns whether the graph contains at least one circle
+    private boolean shareEdge(LinkedHashSet<Artifact> cycle1,LinkedHashSet<Artifact> cycle2) 
+    {
+    	Map<Artifact, Artifact> map1 = cycleToEdgeMap(cycle1);
+    	Map<Artifact, Artifact> map2 = cycleToEdgeMap(cycle2);
+    	if ( map1.keySet().equals( map2.keySet() ) ) {
+    		return true;
+    	}
+    	for ( Entry<Artifact, Artifact> entry : map1.entrySet() ) {
+    		if ( Objects.equals( map2.get(entry.getKey()) , entry.getValue() ) ) {
+    			return true;
+    		}
+    	}
+    	for ( Entry<Artifact, Artifact> entry : map2.entrySet() ) {
+    		if ( Objects.equals( map1.get(entry.getKey()) , entry.getValue() ) ) {
+    			return true;
+    		}
+    	}    	
+    	return false;
+    }
+    
+    private Map<Artifact,Artifact> cycleToEdgeMap(LinkedHashSet<Artifact> cycle) 
+    {
+    	Map<Artifact,Artifact> edges1 = new HashMap<>();
+    	Artifact previous = null;
+    	Artifact current = null;
+    	for (Iterator<Artifact> it = cycle.iterator(); it.hasNext();) {
+    		previous = current;
+			current = it.next();
+			if ( previous == null ) {
+				edges1.put(current,current);
+			} else {
+				edges1.put(previous, current);
+			}
+		}
+    	return edges1; // TODO: Implement me    	
+    }
+    
+    // returns the shortest cycle containing a given node (if any exists)
     private LinkedHashSet<Artifact> getShortestCycle(Artifact a) 
     {
     	artifacts.values().forEach( x -> x.parent = null );

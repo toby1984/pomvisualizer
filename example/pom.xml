@@ -32,6 +32,11 @@
        <artifactId>project5</artifactId>
        <version>1.0.0</version>
      </dependency>
+     <dependency>
+       <groupId>de.codesourcery.example</groupId>
+       <artifactId>project6</artifactId>
+       <version>1.0.0</version>
+     </dependency>
     </dependencies>
   </dependencyManagement>
 
@@ -41,6 +46,7 @@
     <module>project3</module>
     <module>project4</module>
     <module>project5</module>
+    <module>project6</module>
   </modules>
 
 </project>
