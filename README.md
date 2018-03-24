@@ -2,6 +2,8 @@ __POM visualizer__
 
 A tiny self-executable Java program that searches a directory subtree for Maven pom.xml files and writes a dependency graph as Graphviz/DOT output to standard out. The program will look for cycles in the graph and color the edges of the shortest cycles in red.
 
+![screenshot](https://github.com/toby1984/pomvisualizer/blob/master/screenshot.png?raw=true)
+
 __Requirements__
 
 GraphViz (http://www.graphviz.org/) , JDK 1.8 and Maven 3.x
